@@ -1,0 +1,100 @@
+name: Scrape keiba races for 2026-08
+
+on:
+  push:
+    branches:
+      - chore/keiba-2026-08-fetch-probe-20260901
+    paths:
+      - .github/workflows/scrape-keiba-2026-08.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scrape-keiba-2026-08
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install "requests>=2.31" "beautifulsoup4>=4.12"
+          curl --fail --location --retry 3 \
+            --output scrape_202608_static.py \
+            https://raw.githubusercontent.com/shortcut-guide/keiba-predictor/e3bd1961293cdd3651e3ace6359d00e8619a1735/scripts/scrape_202608_static.py
+          python -m py_compile scrape_202608_static.py
+
+      - name: Fetch all August race pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scrape_202608_static.py \
+            --output-dir artifacts/keiba-races-2026-08 \
+            --workers 8 \
+            2>&1 | tee scrape-2026-08.log
+
+      - name: Validate output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          output = Path("artifacts/keiba-races-2026-08")
+          metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+          assert metadata["source_counts"] == {"jra": 360, "nankan": 288}
+          assert metadata["counts"]["races"] == 648
+          assert metadata["validation"]["integrity_check"] == "ok"
+          assert metadata["validation"]["foreign_key_violations"] == 0
+          assert json.loads((output / "failures.json").read_text(encoding="utf-8")) == []
+
+          database = sqlite3.connect(output / "keiba-races-2026-08.db")
+          try:
+              assert database.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+              assert database.execute("SELECT COUNT(*) FROM races").fetchone()[0] == 648
+              assert database.execute("SELECT MIN(date), MAX(date) FROM races").fetchone() == (
+                  "2026-08-01",
+                  "2026-08-31",
+              )
+          finally:
+              database.close()
+
+          for table in ("races", "horses", "payouts"):
+              with (output / f"{table}.csv").open(encoding="utf-8-sig", newline="") as stream:
+                  rows = sum(1 for _ in csv.reader(stream)) - 1
+              assert rows == metadata["counts"][table], (table, rows, metadata["counts"][table])
+          print(json.dumps(metadata, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Add report to summary
+        if: always()
+        shell: bash
+        run: |
+          test ! -f artifacts/keiba-races-2026-08/report.md || cat artifacts/keiba-races-2026-08/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload database, CSVs, metadata, and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keiba-races-2026-08
+          path: |
+            artifacts/keiba-races-2026-08/
+            scrape-2026-08.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
