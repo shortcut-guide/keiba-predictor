@@ -20,25 +20,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch sample pages
+      - name: Fetch sample and sitemaps
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p probe
-          curl --fail --location --retry 3 \
-            --user-agent 'Mozilla/5.0 (compatible; keiba-data-backfill/1.0)' \
-            --dump-header probe/sample.headers \
-            --output probe/sample.html \
-            https://data.keiba-intelligence.jp/jra/results/2026/08/08/sapporo/8/
-          for path in robots.txt sitemap.xml sitemap_index.xml; do
-            curl --location --retry 2 \
-              --user-agent 'Mozilla/5.0 (compatible; keiba-data-backfill/1.0)' \
-              --dump-header "probe/${path//\//_}.headers" \
-              --output "probe/${path//\//_}" \
-              "https://data.keiba-intelligence.jp/$path" || true
-          done
-          wc -c probe/*
-          head -n 80 probe/sample.html
+          base=https://data.keiba-intelligence.jp
+          ua='Mozilla/5.0 (compatible; keiba-data-backfill/1.0)'
+          curl --fail --location --retry 3 --user-agent "$ua" \
+            --dump-header probe/sample.headers --output probe/sample.html \
+            "$base/jra/results/2026/08/08/sapporo/8/"
+          curl --fail --location --retry 3 --user-agent "$ua" \
+            --output probe/robots.txt "$base/robots.txt"
+          curl --fail --location --retry 3 --user-agent "$ua" \
+            --output probe/sitemap-index.xml "$base/sitemap-index.xml"
+          curl --fail --location --retry 3 --user-agent "$ua" \
+            --output probe/sitemap-0.xml "$base/sitemap-0.xml"
+          grep -o 'https://[^<]*' probe/sitemap-0.xml \
+            | grep '/results/2026/08/' \
+            | sort -u > probe/urls-2026-08.txt
+          grep '/jra/results/2026/08/.*/[0-9]\+/$' probe/urls-2026-08.txt \
+            > probe/jra-race-urls-2026-08.txt || true
+          grep '/nankan/results/2026/08/.*/[0-9]\+/$' probe/urls-2026-08.txt \
+            > probe/nankan-race-urls-2026-08.txt || true
+          wc -l probe/*urls-2026-08.txt
+          tail -n 30 probe/jra-race-urls-2026-08.txt || true
 
       - name: Upload probe
         uses: actions/upload-artifact@v4
